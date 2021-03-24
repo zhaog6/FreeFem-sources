@@ -300,6 +300,7 @@ WHERE-all:Makefile Make-petsc-download.mk
 endif
 $(SRCDIR)/tag-tar:$(PACKAGE)
 	-tar xzf $(PACKAGE)
+	mv petsc-7638c053fab6e80da34cbe604574a5045f4bd71e petsc-$(VERSION)
 ifeq ($(WIN32DLLTARGET),)
 	cd petsc-$(VERSION) && patch -p1 < ../petsc-metis.patch && cd -
 endif
