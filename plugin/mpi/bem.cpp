@@ -9,12 +9,7 @@
 #include <lgfem.hpp>
 #include <R3.hpp>
 
-#include <htool/clustering/DDM_cluster.hpp>
-#include <htool/lrmat/partialACA.hpp>
-#include <htool/lrmat/fullACA.hpp>
-#include <htool/lrmat/SVD.hpp>
-#include <htool/types/matrix.hpp>
-#include <htool/types/hmatrix.hpp>
+#include <htool/htool.hpp>
 
 // include the bemtool library .... path define in where library
 //#include <bemtool/operator/block_op.hpp>
@@ -67,7 +62,7 @@ public:
     virtual int get_sizeworld() const = 0;
     virtual int get_local_size() const = 0;
     virtual const std::vector<std::unique_ptr<SubMatrix<K>>>& get_MyNearFieldMats() const = 0;
-    virtual const LowRankMatrix<K,GeometricClusteringDDM>& get_MyFarFieldMats(int i) const = 0;
+    virtual const LowRankMatrix<K,GeometricClustering>& get_MyFarFieldMats(int i) const = 0;
     virtual int get_MyFarFieldMats_size() const = 0;
     virtual const std::vector<SubMatrix<K>*>& get_MyStrictlyDiagNearFieldMats() const = 0;
     virtual Matrix<K> to_dense_perm() const = 0;
@@ -81,12 +76,12 @@ public:
 template<class K, template<class,class> class LR>
 class HMatrixImpl : public HMatrixVirt<K> {
 private:
-    HMatrix<K,LR,GeometricClusteringDDM,RjasanowSteinbach> H;
+    HMatrix<K,LR,GeometricClustering,RjasanowSteinbach> H;
 public:
     HMatrixImpl(IMatrix<K>& I, const std::vector<htool::R3>& xt, char symmetry='N', char UPLO='U',const int& reqrank=-1, MPI_Comm comm=MPI_COMM_WORLD) : H(I,xt,symmetry,UPLO,reqrank,comm){}
     HMatrixImpl(IMatrix<K>& I, const std::vector<htool::R3>& xt, const std::vector<htool::R3>& xs, const int& reqrank=-1, MPI_Comm comm=MPI_COMM_WORLD) : H(I,xt,xs,reqrank,comm){}
     const std::map<std::string, std::string>& get_infos() const {return H.get_infos();}
-    void mvprod_global(const K* const in, K* const out,const int& mu=1) const {return H.mvprod_global(in,out,mu);}
+    void mvprod_global(const K* const in, K* const out,const int& mu=1) const {return H.mvprod_global_to_global(in,out,mu);}
     int nb_rows() const { return H.nb_rows();}
     int nb_cols() const { return H.nb_cols();}
     void cluster_to_target_permutation(const K* const in, K* const out) const {return H.cluster_to_target_permutation(in,out);}
@@ -96,7 +91,7 @@ public:
     int get_sizeworld() const {return H.get_sizeworld();}
     int get_local_size() const {return H.get_local_size();}
     const std::vector<std::unique_ptr<SubMatrix<K>>>& get_MyNearFieldMats() const {return H.get_MyNearFieldMats();}
-    const LowRankMatrix<K,GeometricClusteringDDM>& get_MyFarFieldMats(int i) const {return *(H.get_MyFarFieldMats()[i]);}
+    const LowRankMatrix<K,GeometricClustering>& get_MyFarFieldMats(int i) const {return *(H.get_MyFarFieldMats()[i]);}
     int get_MyFarFieldMats_size() const {return H.get_MyFarFieldMats().size();}
     const std::vector<SubMatrix<K>*>& get_MyStrictlyDiagNearFieldMats() const {return H.get_MyStrictlyDiagNearFieldMats();}
     Matrix<K> to_dense_perm() const {return H.to_dense_perm();}
@@ -340,7 +335,7 @@ public:
                 double* bufcomp = new double[mpirank==0?nblrg:nblr];
                 
                 for (int i=0;i<nblr;i++) {
-                    const LowRankMatrix<K,GeometricClusteringDDM>& l = (*H)->get_MyFarFieldMats(i);
+                    const LowRankMatrix<K,GeometricClustering>& l = (*H)->get_MyFarFieldMats(i);
                     buflr[5*i] = l.get_offset_i();
                     buflr[5*i+1] = l.get_offset_j();
                     buflr[5*i+2] = l.nb_rows();
