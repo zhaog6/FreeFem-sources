@@ -48,7 +48,7 @@ namespace PETSc {
     Data_Sparse_Solver ds;
     ds.factorize = 0;
     ds.initmat = true;
-    int np = OpCall_FormBilinear_np::n_name_param - 6;
+    int np = OpCall_FormBilinear_np::n_name_param - NB_NAME_PARM_HMAT;
     SetEnd_Data_Sparse_Solver<HPDDM::upscaled_type<K>>(stack, ds, b->nargs, np);
 
     WhereStackOfPtr2Free(stack) = new StackOfPtr2Free(stack);
@@ -88,7 +88,175 @@ namespace PETSc {
     B._A->setMatrix(nullptr);
     return SetAny<Dmat*>(&B);
   }
+} // namespace PETSc
 
+#if defined(WITH_bemtool) && PETSC_HAVE_HTOOL
+  #include "bem.hpp"
+namespace PETSc {
+
+static PetscScalar GenEntry(PetscInt sdim,PetscInt i,PetscInt j,void *ctx) {
+    htool::IMatrix<PetscScalar>* generator = reinterpret_cast<htool::IMatrix<PetscScalar>*>(&ctx);
+    return generator->get_coef(i, j);
+}
+
+template<class R, class MMesh, class v_fes1, class v_fes2>
+struct varfBemToMat
+: public OneOperator
+{
+    typedef typename Call_FormBilinear<v_fes1,v_fes2>::const_iterator const_iterator;
+    int init;
+    class Op : public E_F0mps {
+    public:
+        Call_FormBilinear<v_fes1,v_fes2> *b;
+        Expression a;
+        int init;
+        AnyType operator()(Stack s)  const ;
+        
+        Op(Expression aa,Expression  bb,int initt)
+        : b(new Call_FormBilinear<v_fes1,v_fes2>(* dynamic_cast<const Call_FormBilinear<v_fes1,v_fes2> *>(bb))),a(aa),init(initt)
+        { assert(b && b->nargs);
+        }
+        operator aType () const { return atype<Dmat*>();}
+        
+    };
+    
+    E_F0 * code(const basicAC_F0 & args) const
+    {
+        Expression p=args[1];
+        Call_FormBilinear<v_fes1,v_fes2> *t( new Call_FormBilinear<v_fes1,v_fes2>(* dynamic_cast<const Call_FormBilinear<v_fes1,v_fes2> *>(p))) ;
+        return  new Op(to<Dmat*>(args[0]),args[1],init);}
+  
+     varfBemToMat(int initt=0) :
+     OneOperator(atype<Dmat*>(),atype<Dmat*>(),atype<const Call_FormBilinear<v_fes1,v_fes2>*>()),
+        init(initt)
+        {}
+    
+};
+
+
+template<class R,class MMesh, class v_fes1,class v_fes2>
+AnyType varfBemToMat<R,MMesh,v_fes1,v_fes2>::Op::operator()(Stack stack)  const
+{
+    typedef typename v_fes1::pfes pfes1;
+    typedef typename v_fes2::pfes pfes2;
+    typedef typename v_fes1::FESpace FESpace1;
+    typedef typename v_fes2::FESpace FESpace2;
+    typedef typename FESpace1::Mesh SMesh;
+    typedef typename FESpace2::Mesh TMesh;
+    
+    
+    typedef typename std::conditional<SMesh::RdHat::d==1,bemtool::Mesh1D,bemtool::Mesh2D>::type MeshBemtool;
+    typedef typename std::conditional<SMesh::RdHat::d==1,bemtool::P1_1D,bemtool::P1_2D>::type P1;
+    
+    assert(b && b->nargs);
+    const list<C_F0> & largs=b->largs;
+    
+    // FE space
+    pfes1  * pUh= GetAny<pfes1 *>((*b->euh)(stack));
+    FESpace1 * Uh = **pUh;
+    int NUh =Uh->N;
+    pfes2  * pVh= GetAny<pfes2 *>((*b->evh)(stack));
+    FESpace2 * Vh = **pVh;
+    int NVh =Vh->N;
+    ffassert(Vh);
+    ffassert(Uh);
+    
+    int n=Uh->NbOfDF;
+    int m=Vh->NbOfDF;
+    
+    // VFBEM =1 kernel VF   =2 Potential VF
+    int VFBEM = typeVFBEM(largs,stack);
+    if (mpirank == 0 && verbosity>5)
+        cout << "test VFBEM type (1 kernel / 2 potential) "  << VFBEM << endl;
+    
+ 
+    Dmat* Hmat =GetAny<Dmat* >((*a)(stack));
+
+    Data_Sparse_Solver ds;
+    ds.factorize = 0;
+    ds.initmat = true;
+    int np = OpCall_FormBilinear_np::n_name_param - NB_NAME_PARM_HMAT;
+    SetEnd_Data_Sparse_Solver<HPDDM::upscaled_type<R>>(stack, ds, b->nargs, np);
+
+    WhereStackOfPtr2Free(stack) = new StackOfPtr2Free(stack);
+    
+    // source/target meshes
+    const SMesh & ThU =Uh->Th; // line
+    const TMesh & ThV =Vh->Th; // colunm
+    bool samemesh = (void*)&Uh->Th == (void*)&Vh->Th;  // same Fem2D::Mesh     +++ pot or kernel
+ 
+    if (VFBEM==1)
+        ffassert (samemesh);
+#if 0
+     if(init)
+        *Hmat =0;
+      *Hmat =0;
+    if( *Hmat)
+            delete *Hmat;
+    
+    *Hmat =0;
+#endif
+    
+    bemtool::Geometry node; MeshBemtool mesh;
+    Mesh2Bemtool(ThU, node, mesh);
+    if(mpirank == 0 && verbosity>5)
+        std::cout << "Creating dof" << std::endl;
+    bemtool::Dof<P1> dof(mesh,true);
+    // now the list of dof is known -> can acces to global num triangle and the local num vertice assiciated
+    
+    vector<htool::R3> p1(n);
+    vector<htool::R3> p2(m);
+    Fem2D::R3 pp;
+    for (int i=0; i<n; i++) {
+        pp = ThU.vertices[i];
+        p1[i] = {pp.x, pp.y, pp.z};
+    }
+    
+    
+    if(!samemesh) {
+        for (int i=0; i<m; i++) {
+            pp = ThV.vertices[i];
+            p2[i] = {pp.x, pp.y, pp.z};
+        }
+    }
+    else
+        p2=p1;
+    
+    if (VFBEM==1) {
+        // info kernel
+        pair<BemKernel*,double> kernel = getBemKernel(stack,largs);
+        BemKernel *Ker = kernel.first;
+        double alpha = kernel.second;
+        
+        if(mpirank == 0 && verbosity >5) {
+            int nk=-1;
+            iscombinedKernel(Ker) ? nk=2 : nk=1;
+            for(int i=0;i<nk;i++)
+                cout << " kernel info... i: " << i << " typeKernel: " << Ker->typeKernel[i] << " wave number: " << Ker->wavenum[i]  << " coeffcombi: " << Ker->coeffcombi[i] <<endl;
+        }
+        htool::IMatrix<R>* generator;
+        ff_BIO_Generator<R,P1,SMesh>(generator,Ker,dof,alpha);
+        Mat B;
+        PetscInt m, M;
+        MatHtoolKernel hkernel = GenEntry;
+        MatCreateHtoolFromKernel(PETSC_COMM_WORLD,m,m,M,M,SMesh::RdHat::d==1?1:2,p1.cbegin()->data(),p2.cbegin()->data(),hkernel,generator,&B);
+        MatAssemblyBegin(B, MAT_FINAL_ASSEMBLY);
+        MatAssemblyEnd(B, MAT_FINAL_ASSEMBLY);
+        delete generator;
+    }
+    else if (VFBEM==2) {
+        BemPotential *Pot = getBemPotential(stack,largs);
+        bemtool::Geometry node_output;
+        Mesh2Bemtool(ThV,node_output);
+        // ff_POT_Generator<R,P1,MeshBemtool,SMesh>(Hmat,Pot,dof,mesh,node_output,ds.compressor,p1,p2,comm);
+    }
+
+    return Hmat;
+}
+} // namespace PETSc
+#endif
+
+namespace PETSc {
   template< class Type >
   struct _n_User;
   template< class Type >
@@ -4881,6 +5049,13 @@ static void Init_PETSc( ) {
          new PETSc::varfToMat< PetscScalar, Mesh, v_fes, v_fes >,
          new PETSc::varfToMat< PetscScalar, Mesh3, v_fes3, v_fes3 >,
          new PETSc::varfToMat< PetscScalar, MeshS, v_fesS, v_fesS >);
+#if defined(WITH_bemtool) && PETSC_HAVE_HTOOL
+  TheOperators->Add(
+    "=", new PETSc::varfBemToMat< PetscScalar, MeshS, v_fesS, v_fesS >,
+         new PETSc::varfBemToMat< PetscScalar, MeshL, v_fesL, v_fesL >,
+         new PETSc::varfBemToMat< PetscScalar, MeshS, v_fesS, v_fes  >,
+         new PETSc::varfBemToMat< PetscScalar, MeshL, v_fesL, v_fes  >);
+#endif
   if (std::is_same< PetscInt, int >::value) {
     TheOperators->Add("<-", new PETSc::initCSRfromMatrix< HpSchwarz< PetscScalar > >);
   }
